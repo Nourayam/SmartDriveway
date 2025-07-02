@@ -1,0 +1,2289 @@
+import tkinter as tk
+from tkinter import ttk, scrolledtext, font
+import random
+import time
+import threading
+from datetime import datetime
+import os
+import sys
+import io
+from PIL import Image, ImageTk, ImageDraw
+
+# Constants and Configuration
+# Color scheme
+COLORS = {
+    "bg_dark": "#1E1E2E",       # Background dark
+    "bg_medium": "#302D41",     # Background medium
+    "bg_light": "#575268",      # Background light
+    "accent": "#89DCEB",        # Accent (cyan)
+    "accent_alt": "#F5C2E7",    # Accent alternative (pink)
+    "success": "#ABE9B3",       # Success/good (green)
+    "warning": "#FAE3B0",       # Warning (yellow)
+    "error": "#F28FAD",         # Error/alert (red)
+    "text": "#D9E0EE",          # Main text
+    "text_muted": "#988BA2",    # Muted text
+    "text_dark": "#1A1826"      # Dark text (for light backgrounds)
+}
+
+# System defaults
+DEFAULT_SETTINGS = {
+    "heating_on_threshold": 18.0,
+    "heating_off_threshold": 24.0,
+    "notifications_enabled": True,
+    "voice_control_enabled": True,
+    "night_mode_start": 20,  # 8 PM
+    "night_mode_end": 6,     # 6 AM
+    "proximity_threshold": 200,  # meters
+    "video_simulation_enabled": True,  # Video simulation toggle
+    "video_fps": 10  # Frames per second for video simulation
+}
+
+# Directory for saving snapshots
+SNAPSHOTS_DIR = "detected_plates"
+if not os.path.exists(SNAPSHOTS_DIR):
+    os.makedirs(SNAPSHOTS_DIR)
+
+# Simulation Data
+# Global data (normally would be from MQTT)
+system_data = {
+    "temperature": 18.5,
+    "heating_status": "OFF",
+    "light_status": "OFF",
+    "light_brightness": 60,
+    "vehicle_proximity": 350,
+    "garage_door_status": "CLOSED",
+    "security_status": "ARMED",
+    "detected_plate": "",
+    "is_owner_plate": False,
+    "last_motion_time": 0,
+    "motion_type": "none",
+    "notifications": [],
+    "parking_spots": {"A1": False, "A2": True, "B1": False, "B2": True},  # True = available
+    "last_parking_check": 0,
+    "fuel_level": 75,  # Percentage
+    "fuel_warning_shown": False,
+    "video_processing": False,      # Flag to indicate active video processing
+    "detection_boxes": [],      # Boxes to highlight detections
+    "detection_text": "",       # Text overlay for detections
+    "video_paused": False       # Flag to pause video simulation
+}
+
+
+# Sample license plates
+LICENSE_PLATES = ["YK24JWX", "LP04BFT", "WS18PES", "BM20PLN", "WA25MDG"]
+OWNER_PLATE = "WA25MDG"
+
+
+# Motion types
+MOTION_TYPES = [
+    "human_walking_towards_house",
+    "human_walking_by",
+    "vehicle_entering_driveway",
+    "vehicle_driving_by",
+    "animal_detected",
+    "no_motion"
+]
+
+# Utility Functions
+
+def add_notification(message, level="info"):
+    #Add a notification with timestamp and level.
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    notification = {
+        "timestamp": timestamp,
+        "message": message,
+        "level": level,
+        "read": False
+    }
+    system_data["notifications"].insert(0, notification)
+    
+    # Keep only the last 50 notifications or else terminal will be heavy
+    if len(system_data["notifications"]) > 50:
+        system_data["notifications"] = system_data["notifications"][:50]
+    
+    print(f"Notification: [{timestamp}] {message}")
+    
+    # Call notification callback if defined
+    if hasattr(add_notification, 'callback'):
+        add_notification.callback()
+
+
+def get_color_for_temperature(temp):
+    #Return color based on temperature.
+    if temp < 0:
+        return COLORS["error"]  # Cold - bluish red
+    elif temp < 10:
+        return "#9CCFD8"  # Cool - light blue
+    elif temp < 18:
+        return COLORS["accent"]  # Moderate - cyan
+    elif temp < 24:
+        return COLORS["success"]  # Comfortable - green
+    elif temp < 30:
+        return COLORS["warning"]  # Warm - yellow
+    else:
+        return COLORS["error"]   # Hot - red
+
+
+def get_car_position(proximity, max_distance=500):
+    #Calculate car position percentage (0-1) based on proximity.
+    # Invert the proximity (closer = higher percentage)
+    return max(0, min(1, 1 - (proximity / max_distance)))
+
+def create_rounded_rectangle(canvas, x1, y1, x2, y2, radius=20, **kwargs):
+    #Draw a rounded rectangle on a canvas.
+    points = [
+        x1 + radius, y1,
+        x2 - radius, y1,
+        x2, y1,
+        x2, y1 + radius,
+        x2, y2 - radius,
+        x2, y2,
+        x2 - radius, y2,
+        x1 + radius, y2,
+        x1, y2,
+        x1, y2 - radius,
+        x1, y1 + radius,
+        x1, y1
+    ]
+    return canvas.create_polygon(points, **kwargs, smooth=True)
+
+
+def simulate_license_plate_recognition(frame_data=None):
+        #Simulate license plate recognition.
+        # 70% chance of successful detection when a vehicle is present
+        if system_data["vehicle_proximity"] > 0 and system_data["vehicle_proximity"] < 150 and random.random() < 0.7:
+           if system_data["is_owner_plate"]:
+              return OWNER_PLATE
+           else:
+              return system_data["detected_plate"]
+           return None
+
+
+def save_frame_snapshot():
+    #Simulate saving a snapshot.
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    filename = f"{SNAPSHOTS_DIR}/{timestamp}.jpg"
+    
+    # In a real implementation, this would save the frame
+    # Here we just log it since we don't have actual image data
+    print(f"Simulated saving snapshot: {filename}")
+    add_notification(f"Saved detection snapshot: {filename}", "info")
+    return filename
+
+# ===== Simulation Threads =====
+def temperature_simulation(app):
+    #Simulate temperature changes.
+    while app.running:
+        # Generate realistic temperature changes
+        current = system_data["temperature"]
+        # Smaller changes most of the time
+        change = random.uniform(-0.3, 0.3)
+        # Occasional larger changes
+        if random.random() < 0.1:
+            change = random.uniform(-1.0, 1.0)
+        
+       new_temp = current + change
+        # Keep temperature in a realistic range
+        new_temp = max(-10, min(40, new_temp))
+        system_data["temperature"] = round(new_temp, 1)
+        
+        # Apply heating logic
+        check_heating_logic()
+        
+        time.sleep(5)
+
+def check_heating_logic():
+    #Apply heating control logic based on temperature.
+    temp = system_data["temperature"]
+    heating_on_threshold = DEFAULT_SETTINGS["heating_on_threshold"]
+    heating_off_threshold = DEFAULT_SETTINGS["heating_off_threshold"]
+    
+    if temp < heating_on_threshold and system_data["heating_status"] != "ON":
+        system_data["heating_status"] = "ON"
+        add_notification(f"Temperature {temp}°C - Heating turned ON", "info")
+    elif temp > heating_off_threshold and system_data["heating_status"] != "OFF":
+        system_data["heating_status"] = "OFF"
+        add_notification(f"Temperature {temp}°C - Heating turned OFF", "info")
+    
+    # Temperature alerts
+    if temp < 0 and random.random() < 0.3:  # Don't spam alerts
+        add_notification("WARNING: Driveway might be icy", "warning")
+    elif temp > 30 and random.random() < 0.3:
+        add_notification("WARNING: Driveway might be overheated", "warning")
+
+
+
+def vehicle_simulation(app):
+    #Simulate vehicle movement and detection.
+    while app.running:
+        # Determine if we should generate a new vehicle
+        if system_data["vehicle_proximity"] <= 0 or random.random() < 0.05:
+            # 20% chance it's the owner's vehicle
+            is_owner = random.random() < 0.2
+            
+            if is_owner:
+                system_data["detected_plate"] = OWNER_PLATE
+                system_data["is_owner_plate"] = True
+                system_data["vehicle_proximity"] = random.randint(300, 500)
+                add_notification("Owner's vehicle detected approaching", "success")
+            else:
+                system_data["detected_plate"] = random.choice([p for p in LICENSE_PLATES if p != OWNER_PLATE])
+                system_data["is_owner_plate"] = False
+                system_data["vehicle_proximity"] = random.randint(300, 500)
+                add_notification(f"Unknown vehicle detected: {system_data['detected_plate']}", "warning")
+        
+        # Move existing vehicle
+        if system_data["vehicle_proximity"] > 0:
+            # Calculate movement - tend to approach
+            if system_data["garage_door_status"] == "CLOSED" or system_data["vehicle_proximity"] > 10:
+                # Vehicle approaching
+                movement = random.randint(-30, 5)
+            else:
+                # Vehicle leaving or stopped
+                if random.random() < 0.3:  # 30% chance to start leaving
+                    movement = random.randint(5, 20)
+                else:
+                    movement = 0  # Vehicle stopped
+            
+            system_data["vehicle_proximity"] += movement
+            
+            # Keep in bounds
+            system_data["vehicle_proximity"] = max(0, min(500, system_data["vehicle_proximity"]))
+            
+            # Vehicle proximity logic
+            proximity = system_data["vehicle_proximity"]
+            
+            # Garage door control for owner
+            if system_data["is_owner_plate"]:
+                if proximity < 30 and system_data["garage_door_status"] == "CLOSED":
+                    system_data["garage_door_status"] = "OPENING"
+                    add_notification("Owner's vehicle nearby - Opening garage door", "success")
+                    # Start a timer to change to OPEN
+                    threading.Timer(3.0, lambda: set_garage_status("OPEN")).start()
+                elif proximity > 100 and system_data["garage_door_status"] == "OPEN":
+                    system_data["garage_door_status"] = "CLOSING"
+                    add_notification("Owner's vehicle leaving - Closing garage door", "info")
+                    # Start a timer to change to CLOSED
+                    threading.Timer(3.0, lambda: set_garage_status("CLOSED")).start()
+
+           # Light and security logic based on proximity
+            if proximity < DEFAULT_SETTINGS["proximity_threshold"]:
+                if system_data["light_status"] == "OFF":
+                    system_data["light_status"] = "ON"
+                    system_data["light_brightness"] = 80
+                    add_notification("Vehicle approaching - Lights turned ON", "info")
+            
+                if system_data["security_status"] == "ARMED" and system_data["is_owner_plate"]:
+                    system_data["security_status"] = "HOME"
+                    add_notification("Security system switched to HOME mode", "success")
+
+                if 10 < proximity < 50 and system_data["garage_door_status"] != "OPEN":
+                # Only notify occasionally to avoid spam
+                
+                    if random.random() < 0.3:  # 30% chance each check
+                        add_notification("The parking area is safe", "success")
+    
+                # Additional checks as the vehicle gets very close
+                if proximity < 20:
+                # Check for obstacles (simulate)
+                    if random.random() < 0.1:  # 10% chance of obstacle
+                        add_notification("CAUTION: Obstacle detected near parking space", "warning")
+                else:
+                # Clear to park
+                    add_notification("Clear to park. Approach slowly.", "info")
+            
+            # If vehicle disappeared
+            if system_data["vehicle_proximity"] <= 0:
+                system_data["detected_plate"] = ""
+                system_data["is_owner_plate"] = False
+                add_notification("Vehicle left detection range", "info")
+        
+        time.sleep(10)
+
+def video_stream_simulation(app):
+    #Simulate video stream processing
+    while app.running:
+        if DEFAULT_SETTINGS["video_simulation_enabled"] and not system_data["video_paused"]:
+            # Simulate video processing
+            system_data["video_processing"] = True
+            
+            # Clear previous detection data
+            system_data["detection_boxes"] = []
+            system_data["detection_text"] = ""
+            
+            # Simulate motion detection
+            if random.random() < 0.3:  # 30% chance of motion in frame
+                system_data["last_motion_time"] = time.time()
+                
+                # Add detection box for motion
+                box_x = random.randint(50, 300)
+                box_y = random.randint(50, 150)
+                box_width = random.randint(50, 100)
+                box_height = random.randint(50, 100)
+                
+                system_data["detection_boxes"].append({
+                    "x": box_x,
+                    "y": box_y,
+                    "width": box_width,
+                    "height": box_height,
+                    "type": "motion",
+                    "color": COLORS["warning"]
+                })
+                
+                system_data["detection_text"] = "Motion Detected"
+
+
+               # Simulate license plate detection if vehicle is close
+               if system_data["vehicle_proximity"] < 150:
+                    plate = simulate_license_plate_recognition()
+                    if plate:
+                        # Add detection box for license plate
+                        plate_x = box_x + box_width//2 - 30
+                        plate_y = box_y + box_height - 15
+                        
+                        system_data["detection_boxes"].append({
+                            "x": plate_x,
+                            "y": plate_y,
+                            "width": 60,
+                            "height": 20,
+                            "type": "plate",
+                            "color": COLORS["accent"],
+                            "text": plate
+                        })
+                        
+                        system_data["detection_text"] = f"Plate Detected: {plate}"
+                        # Save snapshot
+                        if random.random() < 0.5:  # 50% chance to save snapshot
+                            save_frame_snapshot()
+                        
+                        # Owner recognition
+                        if plate == OWNER_PLATE:
+                            system_data["detection_text"] = f"Owner Vehicle: {plate}"
+            
+            # Pause between frames to simulate video FPS
+            time.sleep(1.0 / DEFAULT_SETTINGS["video_fps"])
+        else:
+            # Video simulation disabled or paused
+            system_data["video_processing"] = False
+            time.sleep(0.5)  # Reduced check interval when disabled
+                
+       
+def parking_availability_simulation(app):
+    #Simulate parking spot availability changes.
+    while app.running:
+        current_time = time.time()
+        
+        # Only check periodically to avoid too many notifications
+        if current_time - system_data["last_parking_check"] > 30:  # Check every 30 seconds
+            system_data["last_parking_check"] = current_time
+            
+            # Randomly change some parking spot statuses
+            for spot in system_data["parking_spots"]:
+                if random.random() < 0.2:  # 20% chance to change
+                    system_data["parking_spots"][spot] = not system_data["parking_spots"][spot]
+                    
+                    # Notify if a spot becomes available
+                    if system_data["parking_spots"][spot]:
+                        add_notification(f"Parking spot {spot} is now available", "success")
+            
+            # If driver is looking for parking (when distance is in certain range)
+            if 50 < system_data["vehicle_proximity"] < 200:
+                available_spots = [spot for spot, status in system_data["parking_spots"].items() if status]
+                if available_spots:
+                    spot_list = ", ".join(available_spots)
+                    add_notification(f"Parking available in spots: {spot_list}", "info")
+        
+        time.sleep(5)
+
+def set_garage_status(status):
+    #Helper to update garage status after delay.
+    system_data["garage_door_status"] = status
+    add_notification(f"Garage door is now {status}", "info")
+
+def motion_simulation(app):
+    #Simulate motion detection.
+    while app.running:
+        # Random motion detection
+        if random.random() < 0.3:  # 30% chance of motion
+            motion_weights = [0.15, 0.15, 0.2, 0.2, 0.1, 0.2]  # Probabilities
+            motion_type = random.choices(MOTION_TYPES, weights=motion_weights)[0]
+            
+            if motion_type != "no_motion":
+                system_data["last_motion_time"] = time.time()
+                system_data["motion_type"] = motion_type
+                
+                # Only notify for important motion
+                if motion_type == "human_walking_towards_house":
+                    add_notification("Person detected approaching house", "warning")
+                elif motion_type == "vehicle_entering_driveway":
+                    add_notification("Vehicle entering driveway", "info")
+                # Light control based on motion at night
+                
+                current_hour = datetime.now().hour
+                if (current_hour >= DEFAULT_SETTINGS["night_mode_start"] or 
+                    current_hour < DEFAULT_SETTINGS["night_mode_end"]):
+                    if system_data["light_status"] != "ON":
+                        system_data["light_status"] = "ON"
+                        system_data["light_brightness"] = 100
+                        add_notification("Motion detected at night - Lights at full brightness", "info")
+                        # Start a timer to dim lights after 10 minutes if no new motion
+                        threading.Timer(600.0, check_and_dim_lights).start()
+        
+        time.sleep(random.uniform(5, 15))
+
+
+def fuel_level_simulation(app):
+    #Simulate fuel consumption based on vehicle movement.
+    while app.running:
+        # Only consume fuel if vehicle is moving (proximity is changing)
+        if system_data["vehicle_proximity"] > 0:
+            # Small random fuel consumption
+            consumption = random.uniform(0.05, 0.2)
+            system_data["fuel_level"] = max(0, system_data["fuel_level"] - consumption)
+            
+            # Check for low fuel
+            if system_data["fuel_level"] < 20 and not system_data["fuel_warning_shown"]:
+                add_notification("WARNING: Fuel level below 20%. Please refuel soon.", "warning")
+                system_data["fuel_warning_shown"] = True
+            
+            # Reset warning flag if refueled
+            elif system_data["fuel_level"] > 30 and system_data["fuel_warning_shown"]:
+                system_data["fuel_warning_shown"] = False
+            
+            # Critical fuel warning
+            if system_data["fuel_level"] < 10:
+                add_notification("CRITICAL: Fuel level critically low!", "error")
+        
+        # Occasionally simulate refueling when car disappears
+        if system_data["vehicle_proximity"] <= 0 and system_data["fuel_level"] < 60:
+            if random.random() < 0.1:  # 10% chance to refuel when car is away
+                old_level = system_data["fuel_level"]
+                system_data["fuel_level"] = random.uniform(90, 100)
+                add_notification(f"Vehicle refueled: {old_level:.1f}% → {system_data['fuel_level']:.1f}%", "success")
+                system_data["fuel_warning_shown"] = False
+        
+        time.sleep(5)
+
+
+
+def check_and_dim_lights():
+    #Check for recent motion and dim lights if none.
+    if time.time() - system_data["last_motion_time"] >= 600:  # No motion for 10 minutes
+        current_hour = datetime.now().hour
+        if (current_hour >= DEFAULT_SETTINGS["night_mode_start"] or 
+            current_hour < DEFAULT_SETTINGS["night_mode_end"]):
+            if system_data["light_status"] == "ON":
+                system_data["light_status"] = "DIM"
+                system_data["light_brightness"] = 40
+                add_notification("No recent motion - Lights dimmed to 40%", "info")
+
+def light_control_simulation(app):
+    """Simulate light control based on time and conditions."""
+    while app.running:
+        current_hour = datetime.now().hour
+        
+        # Night time dimming (if no recent motion)
+        if (current_hour >= DEFAULT_SETTINGS["night_mode_start"] or 
+            current_hour < DEFAULT_SETTINGS["night_mode_end"]):
+            if (system_data["light_status"] == "ON" and 
+                time.time() - system_data["last_motion_time"] >= 600 and
+                system_data["light_brightness"] > 40):
+                system_data["light_status"] = "DIM"
+                system_data["light_brightness"] = 40
+                add_notification("Night mode - Lights dimmed to save energy", "info")
+        
+        # Day time - turn off lights if they were left on
+        elif (6 <= current_hour < 20 and
+              system_data["light_status"] != "OFF" and
+              system_data["garage_door_status"] == "CLOSED"):
+            system_data["light_status"] = "OFF"
+            system_data["light_brightness"] = 0
+            add_notification("Daytime - Lights turned off", "info")
+        
+        time.sleep(10)
+ 
+#GUI DESIGN CLASS
+
+
+# Custom Widget Classes
+class ModernButton(tk.Canvas):
+    #A modern, rounded button with hover effect.
+    def __init__(self, parent, text, command=None, width=120, height=35, 
+                 bg_color=COLORS["accent"], text_color=COLORS["text_dark"],
+                 hover_color=None, corner_radius=10, **kwargs):
+        super().__init__(parent, width=width, height=height, 
+                         highlightthickness=0, bg=COLORS["bg_dark"], **kwargs)
+        
+        self.text = text
+        self.command = command
+        self.width = width
+        self.height = height
+        self.bg_color = bg_color
+        self.text_color = text_color
+        self.hover_color = hover_color if hover_color else self._get_hover_color(bg_color)
+        self.corner_radius = corner_radius
+        
+        # State
+        self.hover = False
+        
+        # Draw initial button
+        self._draw_button()
+        
+        # Bind events
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_click)
+    
+    def _get_hover_color(self, color):
+        """Generate a lighter version of the color for hover state."""
+        # Simple lightening - in a real app, use a proper color utility
+        return color
+    
+    def update_text(self, text):
+        """Update the button text."""
+        self.text = text
+        self._draw_button()
+
+    def _draw_button(self):
+        #Draw the button with current state
+        self.delete("all")
+        
+        # Draw rounded rectangle
+        bg_color = self.hover_color if self.hover else self.bg_color
+        create_rounded_rectangle(
+            self, 0, 0, self.width, self.height, 
+            radius=self.corner_radius, fill=bg_color, outline=""
+        )
+        
+        # Draw text
+        self.create_text(
+            self.width/2, self.height/2, 
+            text=self.text, fill=self.text_color,
+            font=("Segoe UI", 10, "bold")
+        )
+    
+    def _on_enter(self, event):
+        #Mouse enter event
+        self.hover = True
+        self._draw_button()
+    
+    def _on_leave(self, event):
+        #Mouse leave event
+        self.hover = False
+        self._draw_button()
+    
+    def _on_click(self, event):
+        #Mouse click event
+        if self.command:
+            self.command()
+
+class StatusCard(tk.Canvas):
+    #A modern card showing a status with label and value.
+    def __init__(self, parent, label, value="--", icon=None, width=180, height=80, **kwargs):
+        super().__init__(parent, width=width, height=height, 
+                          highlightthickness=0, bg=COLORS["bg_dark"], **kwargs)
+        
+        self.label = label
+        self.value = value
+        self.icon = icon
+        self.width = width
+        self.height = height
+        
+        self._draw_card()
+    
+    def _draw_card(self):
+        self.delete("all")
+        
+        # Draw card background
+        create_rounded_rectangle(
+            self, 0, 0, self.width, self.height, 
+            radius=10, fill=COLORS["bg_medium"], outline=""
+        )
+        
+        # Draw label
+        self.create_text(
+            10, 15, 
+            text=self.label, fill=COLORS["text_muted"],
+            font=("Segoe UI", 10), anchor="w"
+        )
+        
+        # Draw value
+        self.create_text(
+            10, 45, 
+            text=self.value, fill=COLORS["text"],
+            font=("Segoe UI", 16, "bold"), anchor="w"
+        )
+    def update_value(self, new_value):
+        #Update the displayed value.
+        self.value = new_value
+        self._draw_card()
+
+class ControlToggle(tk.Canvas):
+    #A modern toggle switch.
+    def __init__(self, parent, text, value=False, command=None, width=120, height=30, **kwargs):
+        super().__init__(parent, width=width, height=height, 
+                          highlightthickness=0, bg=COLORS["bg_dark"], **kwargs)
+        
+        self.text = text
+        self.value = value
+        self.command = command
+        self.width = width
+        self.height = height
+        
+        self._draw_toggle()
+        
+        # Bind events
+        self.bind("<Button-1>", self._on_click)
+    
+    def _draw_toggle(self):
+        #Draw the toggle switch.
+        self.delete("all")
+        
+        # Draw text
+        self.create_text(
+            5, self.height/2, 
+            text=self.text, fill=COLORS["text"],
+            font=("Segoe UI", 10), anchor="w"
+        )
+        
+        # Draw track
+        track_width = 40
+        track_height = 20
+        track_x = self.width - track_width - 5
+        track_y = (self.height - track_height) / 2
+        
+        track_color = COLORS["accent"] if self.value else COLORS["bg_light"]
+        create_rounded_rectangle(
+            self, track_x, track_y, 
+            track_x + track_width, track_y + track_height,
+            radius=track_height/2, fill=track_color, outline=""
+        )
+        
+        # Draw thumb
+        thumb_size = 16
+        thumb_offset = track_width - thumb_size - 2 if self.value else 2
+        thumb_x = track_x + thumb_offset
+        thumb_y = track_y + (track_height - thumb_size) / 2
+        
+        create_rounded_rectangle(
+            self, thumb_x, thumb_y,
+            thumb_x + thumb_size, thumb_y + thumb_size,
+            radius=thumb_size/2, fill=COLORS["text"], outline=""
+        )
+
+    def _on_click(self, event):
+        #Toggle the switch when clicked
+        self.value = not self.value
+        self._draw_toggle()
+        
+        if self.command:
+            self.command(self.value)
+    
+    def set_value(self, value):
+        #Set the toggle value programmatically
+        if self.value != value:
+            self.value = value
+            self._draw_toggle()
+
+#class for notifications
+class NotificationItem(tk.Canvas):
+    #A single notification item.
+    def __init__(self, parent, notification, width=380, height=60, **kwargs):
+        super().__init__(parent, width=width, height=height, 
+                          highlightthickness=0, bg=COLORS["bg_dark"], **kwargs)
+        
+        self.notification = notification
+        self.width = width
+        self.height = height
+        
+        self._draw_notification()
+    
+    def _draw_notification(self):
+        """Draw the notification item."""
+        self.delete("all")
+        
+        # Determine color based on level
+        level = self.notification["level"]
+        if level == "error":
+            color = COLORS["error"]
+        elif level == "warning":
+            color = COLORS["warning"]
+        elif level == "success":
+            color = COLORS["success"]
+        else:  # info
+            color = COLORS["accent"]
+        
+        # Draw background with left border
+        create_rounded_rectangle(
+            self, 0, 0, self.width, self.height, 
+            radius=5, fill=COLORS["bg_medium"], outline=""
+        )
+        
+        # Draw colored left border
+        self.create_rectangle(
+            0, 0, 5, self.height,
+            fill=color, outline=""
+        )
+        
+        # Draw timestamp
+        self.create_text(
+            15, 15, 
+            text=self.notification["timestamp"], fill=COLORS["text_muted"],
+            font=("Segoe UI", 9), anchor="w"
+        )
+        
+        # Draw message
+        self.create_text(
+            15, 35, 
+            text=self.notification["message"], fill=COLORS["text"],
+            font=("Segoe UI", 10), anchor="w",
+            width=self.width - 20  # Text wrapping
+        )
+
+
+# ===== Main Application =====
+class SmartDrivewayApp:
+    def update_notifications(self):
+        #Update the notifications list.
+        # Clear all current notification items
+        for widget in self.notif_items_frame.winfo_children():
+            widget.destroy()
+        
+        # Add notification items
+        for i, notification in enumerate(system_data["notifications"]):
+            item = NotificationItem(self.notif_items_frame, notification, width=self.notif_canvas.winfo_width() - 20)
+            item.pack(fill=tk.X, pady=5)
+        
+        # Update scrollregion
+        self.notif_items_frame.update_idletasks()
+        self.notif_canvas.configure(scrollregion=self.notif_canvas.bbox("all"))
+        
+        # Scroll to top
+        self.notif_canvas.yview_moveto(0)
+
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Smart Driveway System")
+        self.root.geometry("1280x720")
+        self.root.minsize(1024, 600)
+        self.root.configure(bg=COLORS["bg_dark"])
+        
+        # Application state
+        self.running = True
+        self.current_tab = "dashboard"
+        
+        # Register notification callback
+        add_notification.callback = self.update_notifications
+        
+        # Set up UI
+        self.setup_fonts()
+        self.setup_styles()
+        self.create_ui()
+        
+        # Start simulation threads
+        self.start_simulations()
+
+    def update_video_simulation(self):
+        #Update the video simulation visualization.
+        # Skip if the video_canvas isn't defined yet or we're not on that tab
+        if not hasattr(self, 'video_canvas'):
+            return
+                
+        # Only update if we're on the video tab
+        try:
+            if self.notebook.index(self.notebook.select()) != 1:
+                return
+        except:
+            return
+                
+        canvas = self.video_canvas
+        canvas.delete("all")
+        
+        # Get canvas dimensions
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        
+        if width < 10 or height < 10:  # Canvas not ready
+            return
+        
+        # Draw video frame background
+        canvas.create_rectangle(
+            0, 0, width, height,
+            fill="#000000", outline=""
+        )
+        
+        # Update video status indicator
+        if DEFAULT_SETTINGS["video_simulation_enabled"]:
+            if system_data["video_paused"]:
+                self.video_status.config(text="⏸ PAUSED", foreground=COLORS["warning"])
+                if hasattr(self, 'play_pause_btn'):
+                    self.play_pause_btn.update_text("▶ Play")
+            else:
+                self.video_status.config(text="● LIVE", foreground=COLORS["success"])
+                if hasattr(self, 'play_pause_btn'):
+                    self.play_pause_btn.update_text("⏸ Pause")
+        else:
+            self.video_status.config(text="✕ OFF", foreground=COLORS["error"])
+        
+        # Draw simulated video content
+        if system_data["video_processing"] and not system_data["video_paused"]:
+            # Simulate a simple video feed
+            # Draw simulated environment (road, sky)
+            canvas.create_rectangle(0, 0, width, height/2, fill="#87CEEB")  # Sky
+            canvas.create_rectangle(0, height/2, width, height, fill="#555555")  # Road
+            
+            # Draw detection boxes
+            for box in system_data["detection_boxes"]:
+                # Scale box to canvas size
+                x = box["x"] * width / 400
+                y = box["y"] * height / 300
+                w = box["width"] * width / 400
+                h = box["height"] * height / 300
+                
+                # Draw box
+                canvas.create_rectangle(
+                    x, y, x + w, y + h,
+                    outline=box["color"], width=2, dash=(5, 3)
+                )
+                
+                # Add text if present
+                if "text" in box:
+                    canvas.create_text(
+                        x + w/2, y + h + 10,
+                        text=box["text"],
+                        fill=box["color"],
+                        font=("Segoe UI", 10, "bold")
+                    )
+            
+            # Add overlay text
+            if system_data["detection_text"]:
+                canvas.create_text(
+                    width/2, 30,
+                    text=system_data["detection_text"],
+                    fill="#000080",
+                    font=("Segoe UI", 12, "bold")
+                )
+        
+        # Add timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        canvas.create_text(
+            width - 10, height - 10,
+            text=timestamp,
+            fill=COLORS["text_muted"],
+            font=("Segoe UI", 9),
+            anchor="se"
+        )
+    
+    def setup_video_stream(self):
+        #Set up the video stream tab.
+        # Main content container
+        content_frame = ttk.Frame(self.video_tab, style="TFrame")
+        content_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Split into left (main video) and right (controls/info)
+        left_frame = ttk.Frame(content_frame, style="TFrame")
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        right_frame = ttk.Frame(content_frame, style="TFrame")
+        right_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(10, 0))
+        right_frame.configure(width=300)
+        
+        # Main video display
+        video_frame = ttk.Frame(left_frame, style="Card.TFrame")
+        video_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Video header
+        header_frame = ttk.Frame(video_frame, style="Card.TFrame")
+        header_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(header_frame, 
+                text="Live Video Feed",
+                font=self.fonts["subheading"],
+                background=COLORS["bg_medium"],
+                foreground=COLORS["text"]).pack(side=tk.LEFT, padx=5)
+        
+        # Status indicator
+        self.video_status = ttk.Label(header_frame,
+                                    text="● LIVE",
+                                    font=self.fonts["button"],
+                                    background=COLORS["bg_medium"],
+                                    foreground=COLORS["success"])
+        self.video_status.pack(side=tk.RIGHT, padx=10)
+        
+        # Video canvas
+        self.video_canvas_frame = ttk.Frame(video_frame, style="Card.TFrame")
+        self.video_canvas_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        self.video_canvas = tk.Canvas(self.video_canvas_frame,
+                                    bg=COLORS["bg_dark"],
+                                    highlightthickness=0,
+                                    bd=0)
+        self.video_canvas.pack(fill=tk.BOTH, expand=True)
+        
+        # Right side - controls and detection info
+        # Controls panel
+        controls_frame = ttk.Frame(right_frame, style="Card.TFrame")
+        controls_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(controls_frame, 
+                text="Stream Controls",
+                font=self.fonts["subheading"],
+                background=COLORS["bg_medium"],
+                foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Control buttons
+        buttons_frame = ttk.Frame(controls_frame, style="Card.TFrame")
+        buttons_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Play/Pause button
+        self.play_pause_btn = ModernButton(buttons_frame, text="⏸ Pause", 
+                                        command=self.toggle_video_pause,
+                                        bg_color=COLORS["accent"],
+                                        width=120, height=35)
+        self.play_pause_btn.pack(anchor="w", pady=5)
+        
+        # Snapshot button
+        snapshot_btn = ModernButton(buttons_frame, text="📷 Snapshot", 
+                                command=self.take_snapshot,
+                                bg_color=COLORS["accent_alt"],
+                                width=120, height=35)
+        snapshot_btn.pack(anchor="w", pady=5)
+        
+        # Detection toggle
+        self.detection_toggle = ControlToggle(buttons_frame, "Enable Plate Detection", 
+                                        value=True,
+                                        command=self.toggle_detection)
+        self.detection_toggle.pack(anchor="w", pady=10)
+        
+        # Info panel
+        info_frame = ttk.Frame(right_frame, style="Card.TFrame")
+        info_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        ttk.Label(info_frame, 
+                text="Detection Info",
+                font=self.fonts["subheading"],
+                background=COLORS["bg_medium"],
+                foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Detection info content
+        info_content = ttk.Frame(info_frame, style="Card.TFrame")
+        info_content.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Last detection info
+        ttk.Label(info_content, 
+                text="Last Detection:",
+                background=COLORS["bg_medium"],
+                foreground=COLORS["text"]).grid(row=0, column=0, sticky="w", pady=2)
+        
+        self.last_detection_label = ttk.Label(info_content, 
+                                        text="None",
+                                        background=COLORS["bg_medium"],
+                                        foreground=COLORS["text_muted"])
+        self.last_detection_label.grid(row=0, column=1, sticky="w", padx=(10, 0), pady=2)
+        
+        # Detection type
+        ttk.Label(info_content, 
+                text="Type:",
+                background=COLORS["bg_medium"],
+                foreground=COLORS["text"]).grid(row=1, column=0, sticky="w", pady=2)
+        
+        self.detection_type_label = ttk.Label(info_content, 
+                                        text="None",
+                                        background=COLORS["bg_medium"],
+                                        foreground=COLORS["text_muted"])
+        self.detection_type_label.grid(row=1, column=1, sticky="w", padx=(10, 0), pady=2)
+        
+        # Timestamp
+        ttk.Label(info_content, 
+                text="Time:",
+                background=COLORS["bg_medium"],
+                foreground=COLORS["text"]).grid(row=2, column=0, sticky="w", pady=2)
+        
+        self.detection_time_label = ttk.Label(info_content, 
+                                        text="--:--:--",
+                                        background=COLORS["bg_medium"],
+                                        foreground=COLORS["text_muted"])
+        self.detection_time_label.grid(row=2, column=1, sticky="w", padx=(10, 0), pady=2)
+        
+        # Recent detections list
+        recent_frame = ttk.Frame(right_frame, style="Card.TFrame")
+        recent_frame.pack(fill=tk.BOTH, expand=True)
+        
+        ttk.Label(recent_frame, 
+                text="Recent Detections",
+                font=self.fonts["subheading"],
+                background=COLORS["bg_medium"],
+                foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Listbox for recent detections
+        self.recent_list = tk.Listbox(recent_frame, 
+                                    bg=COLORS["bg_dark"],
+                                    fg=COLORS["text"],
+                                    selectbackground=COLORS["accent"],
+                                    selectforeground=COLORS["text_dark"],
+                                    font=self.fonts["body"],
+                                    bd=0,
+                                    highlightthickness=0)
+        self.recent_list.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+    def toggle_video_pause(self):
+        #Toggle video pause state.
+        system_data["video_paused"] = not system_data["video_paused"]
+        if system_data["video_paused"]:
+            add_notification("Video stream paused", "info")
+        else:
+            add_notification("Video stream resumed", "info")
+
+    def take_snapshot(self):
+        #Manually trigger a snapshot.
+        if DEFAULT_SETTINGS["video_simulation_enabled"]:
+            filename = save_frame_snapshot()
+            add_notification(f"Manual snapshot taken: {filename}", "success")
+        else:
+            add_notification("Cannot take snapshot: Video simulation disabled", "error")
+
+    def toggle_detection(self, value):
+        #Toggle plate detection.
+        if value:
+            add_notification("License plate detection enabled", "info")
+        else:
+            add_notification("License plate detection disabled", "info")
+
+    def update_fps(self, value):
+        #Update the video simulation FPS.
+        fps = int(float(value))
+        DEFAULT_SETTINGS["video_fps"] = fps
+        self.fps_label.config(text=f"{fps} FPS")
+
+    def toggle_video_simulation(self, value):
+        #Toggle video simulation on/off.
+        DEFAULT_SETTINGS["video_simulation_enabled"] = value
+        if value:
+            add_notification("Video simulation enabled", "info")
+        else:
+            add_notification("Video simulation disabled", "info")
+            system_data["video_paused"] = False
+
+    def start_simulations(self):
+        #Start simulation threads
+        # Create and start simulation threads
+        self.simulation_threads = []
+    
+        # Motion simulation (my responsibility)
+        motion_thread = threading.Thread(
+            target=motion_simulation,
+            args=(self,),
+            daemon=True
+        )
+        self.simulation_threads.append(motion_thread)
+
+    
+# Temperature simulation
+        temp_thread = threading.Thread(
+            target=temperature_simulation,
+            args=(self,),
+            daemon=True
+        )
+        self.simulation_threads.append(temp_thread)
+
+
+        # Vehicle simulation
+        vehicle_thread = threading.Thread(
+            target=vehicle_simulation,
+            args=(self,),
+            daemon=True
+        )
+        self.simulation_threads.append(vehicle_thread)
+
+
+        # Light control simulation
+        light_thread = threading.Thread(
+            target=light_control_simulation,
+            args=(self,),
+            daemon=True
+        )
+        self.simulation_threads.append(light_thread)
+
+
+        # Video stream simulation
+        video_thread = threading.Thread(
+            target=video_stream_simulation,
+            args=(self,),
+            daemon=True
+        )
+        self.simulation_threads.append(video_thread)
+
+
+        # Parking availability simulation - NEW
+        parking_thread = threading.Thread(
+            target=parking_availability_simulation,
+            args=(self,),
+            daemon=True
+        )
+        self.simulation_threads.append(parking_thread)
+    
+        # Fuel level simulation - NEW
+        fuel_thread = threading.Thread(
+            target=fuel_level_simulation,
+            args=(self,),
+            daemon=True
+        )
+        self.simulation_threads.append(fuel_thread)
+
+
+
+
+        # Start all threads
+        for thread in self.simulation_threads:
+            thread.start()
+    
+        # Add welcome notification
+        add_notification("Smart Driveway System started", "success")
+        add_notification("Video stream simulation started", "info")
+        
+    def setup_fonts(self):
+        """Set up custom fonts."""
+        # Default system font alternatives that look modern
+        self.fonts = {
+            "heading": ("Segoe UI", 18, "bold"),
+            "subheading": ("Segoe UI", 14, "bold"),
+            "body": ("Segoe UI", 11),
+            "small": ("Segoe UI", 9),
+            "button": ("Segoe UI", 10, "bold")
+        }
+    
+    def setup_styles(self):
+        """Configure ttk styles."""
+        self.style = ttk.Style()
+        self.style.theme_use('clam')  # Use clam theme as base
+        
+        # Configure colors
+        self.style.configure(".", 
+                             background=COLORS["bg_dark"],
+                             foreground=COLORS["text"],
+                             font=self.fonts["body"])
+        
+        # Tabs style
+        self.style.configure("TNotebook", 
+                             background=COLORS["bg_dark"],
+                             tabmargins=[0, 0, 0, 0])
+        self.style.configure("TNotebook.Tab", 
+                             background=COLORS["bg_medium"],
+                             foreground=COLORS["text_muted"],
+                             padding=[20, 5],
+                             font=self.fonts["button"])
+        self.style.map("TNotebook.Tab",
+                       background=[("selected", COLORS["accent"])],
+                       foreground=[("selected", COLORS["text_dark"])])
+        
+        # Frame style
+        self.style.configure("Card.TFrame", 
+                             background=COLORS["bg_medium"],
+                             relief="flat")
+    def create_ui(self):
+        """Create the main UI layout."""
+        # Main frame
+        self.main_frame = ttk.Frame(self.root, style="TFrame")
+        self.main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Header
+        self.create_header()
+        
+        # Tab system
+        self.notebook = ttk.Notebook(self.main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=10)
+        
+        # Create tabs
+        self.dashboard_tab = ttk.Frame(self.notebook, style="TFrame")
+        self.video_tab = ttk.Frame(self.notebook, style="TFrame")
+        self.settings_tab = ttk.Frame(self.notebook, style="TFrame")
+        self.history_tab = ttk.Frame(self.notebook, style="TFrame")
+        
+        self.notebook.add(self.dashboard_tab, text="Dashboard")
+        self.notebook.add(self.video_tab, text="Video Stream")
+        self.notebook.add(self.settings_tab, text="Settings")
+        self.notebook.add(self.history_tab, text="History")
+        
+        # Set up each tab
+        self.setup_dashboard()
+        self.setup_video_stream()
+        self.setup_settings()
+        self.setup_history()
+        
+        # Start UI update loop
+        self.update_ui()
+    
+    def create_header(self):
+        """Create the application header."""
+        header_frame = ttk.Frame(self.main_frame, style="TFrame")
+        header_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Title
+        title_label = ttk.Label(header_frame, 
+                               text="Smart Driveway System",
+                               font=self.fonts["heading"],
+                               background=COLORS["bg_dark"],
+                               foreground=COLORS["accent"])
+        title_label.pack(side=tk.LEFT)
+        
+        # Time display
+        self.time_label = ttk.Label(header_frame,
+                                  text="",
+                                  font=self.fonts["body"],
+                                  background=COLORS["bg_dark"],
+                                  foreground=COLORS["text_muted"])
+        self.time_label.pack(side=tk.RIGHT)
+        self.update_time()
+    
+    def create_video_settings(self):
+        """Create video settings section."""
+        # Video settings frame
+        video_frame = ttk.Frame(self.settings_tab, style="Card.TFrame")
+        video_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Header
+        ttk.Label(video_frame, 
+                text="Video Stream Settings",
+                font=self.fonts["subheading"],
+                background=COLORS["bg_medium"],
+                foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Settings fields
+        fields_frame = ttk.Frame(video_frame, style="Card.TFrame")
+        fields_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Video simulation toggle
+        self.video_sim_toggle = ControlToggle(fields_frame, "Enable Video Simulation", 
+                                        value=DEFAULT_SETTINGS["video_simulation_enabled"],
+                                        command=self.toggle_video_simulation)
+        self.video_sim_toggle.pack(anchor="w", pady=5)
+        
+        # Frame rate settings
+        fps_frame = ttk.Frame(fields_frame, style="Card.TFrame")
+        fps_frame.pack(fill=tk.X, pady=5)
+        
+        ttk.Label(fps_frame, 
+                text="Simulation FPS:",
+                background=COLORS["bg_medium"],
+                foreground=COLORS["text"]).pack(side=tk.LEFT)
+        
+        # FPS Slider
+        self.fps_slider = ttk.Scale(fps_frame, 
+                                from_=1, to=30, 
+                                orient="horizontal",
+                                length=150,
+                                command=self.update_fps)
+        self.fps_slider.pack(side=tk.LEFT, padx=10)
+        self.fps_slider.set(DEFAULT_SETTINGS["video_fps"])
+        
+        # FPS Label
+        self.fps_label = ttk.Label(fps_frame, 
+                                text=f"{DEFAULT_SETTINGS['video_fps']} FPS",
+                                background=COLORS["bg_medium"],
+                                foreground=COLORS["text"])
+        self.fps_label.pack(side=tk.LEFT, padx=5)
+
+    def update_time(self):
+        """Update the header time display."""
+        current_time = datetime.now().strftime("%A, %B %d, %Y - %H:%M:%S")
+        self.time_label.config(text=current_time)
+        self.root.after(1000, self.update_time)
+    
+    def setup_dashboard(self):
+        #Set up the dashboard tab.
+        # Create frames
+        top_frame = ttk.Frame(self.dashboard_tab, style="TFrame")
+        top_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        bottom_frame = ttk.Frame(self.dashboard_tab, style="TFrame")
+        bottom_frame.pack(fill=tk.BOTH, expand=True)
+        
+        # Top frame - Status cards
+        status_frame = ttk.Frame(top_frame, style="Card.TFrame")
+        status_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Status cards
+        self.status_cards = {}
+        
+        # Temperature card
+        self.status_cards["temperature"] = StatusCard(status_frame, "Temperature")
+        self.status_cards["temperature"].grid(row=0, column=0, padx=5, pady=5)
+        
+        # Heating card
+        self.status_cards["heating"] = StatusCard(status_frame, "Heating")
+        self.status_cards["heating"].grid(row=0, column=1, padx=5, pady=5)
+        
+        # Light card
+        self.status_cards["light"] = StatusCard(status_frame, "Lights")
+        self.status_cards["light"].grid(row=0, column=2, padx=5, pady=5)
+        
+        # Garage door card
+        self.status_cards["garage"] = StatusCard(status_frame, "Garage Door")
+        self.status_cards["garage"].grid(row=0, column=3, padx=5, pady=5)
+        
+        # Security card
+        self.status_cards["security"] = StatusCard(status_frame, "Security")
+        self.status_cards["security"].grid(row=0, column=4, padx=5, pady=5)
+        
+        # Fuel Gauge
+        self.status_cards["fuel"] = StatusCard(status_frame, "Fuel Level")
+        self.status_cards["fuel"].grid(row=0, column=5, padx=5, pady=5)
+        
+        # Bottom frame - Split into left and right
+        left_frame = ttk.Frame(bottom_frame, style="TFrame")
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        right_frame = ttk.Frame(bottom_frame, style="TFrame")
+        right_frame.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+        
+        # Left frame - controls and vehicle location
+        self.setup_controls(left_frame)
+        self.setup_vehicle_location(left_frame)
+        
+        # Right frame - camera and notifications
+        self.setup_camera_view(right_frame)
+        self.setup_notifications(right_frame)
+    
+    def setup_controls(self, parent):
+        """Set up the control panel."""
+        # Control panel
+        control_frame = ttk.Frame(parent, style="Card.TFrame")
+        control_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Header
+        ttk.Label(control_frame, 
+                 text="System Controls",
+                 font=self.fonts["subheading"],
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Control buttons
+        button_frame = ttk.Frame(control_frame, style="Card.TFrame")
+        button_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Heating controls
+        heat_label = ttk.Label(button_frame, 
+                              text="Heating:",
+                              background=COLORS["bg_medium"],
+                              foreground=COLORS["text"])
+        heat_label.grid(row=0, column=0, sticky="w", padx=(0, 10), pady=5)
+        
+        heat_on_btn = ModernButton(button_frame, text="ON", 
+                                  command=lambda: self.control_heating("ON"),
+                                  bg_color=COLORS["success"])
+        heat_on_btn.grid(row=0, column=1, padx=5, pady=5)
+        
+        heat_off_btn = ModernButton(button_frame, text="OFF", 
+                                   command=lambda: self.control_heating("OFF"),
+                                   bg_color=COLORS["error"])
+        heat_off_btn.grid(row=0, column=2, padx=5, pady=5)
+        
+        # Light controls
+        light_label = ttk.Label(button_frame, 
+                               text="Lights:",
+                               background=COLORS["bg_medium"],
+                               foreground=COLORS["text"])
+        light_label.grid(row=1, column=0, sticky="w", padx=(0, 10), pady=5)
+        
+        light_on_btn = ModernButton(button_frame, text="ON", 
+                                   command=lambda: self.control_lights("ON"),
+                                   bg_color=COLORS["success"])
+        light_on_btn.grid(row=1, column=1, padx=5, pady=5)
+        
+        light_dim_btn = ModernButton(button_frame, text="DIM", 
+                                    command=lambda: self.control_lights("DIM"),
+                                    bg_color=COLORS["warning"])
+        light_dim_btn.grid(row=1, column=2, padx=5, pady=5)
+        
+        light_off_btn = ModernButton(button_frame, text="OFF", 
+                                    command=lambda: self.control_lights("OFF"),
+                                    bg_color=COLORS["error"])
+        light_off_btn.grid(row=1, column=3, padx=5, pady=5)
+        
+        # Garage door controls
+        garage_label = ttk.Label(button_frame, 
+                                text="Garage Door:",
+                                background=COLORS["bg_medium"],
+                                foreground=COLORS["text"])
+        garage_label.grid(row=2, column=0, sticky="w", padx=(0, 10), pady=5)
+        
+        garage_open_btn = ModernButton(button_frame, text="OPEN", 
+                                      command=lambda: self.control_garage("OPENING"),
+                                      bg_color=COLORS["accent"])
+        garage_open_btn.grid(row=2, column=1, padx=5, pady=5)
+        
+        garage_close_btn = ModernButton(button_frame, text="CLOSE", 
+                                       command=lambda: self.control_garage("CLOSING"),
+                                       bg_color=COLORS["accent_alt"])
+        garage_close_btn.grid(row=2, column=2, padx=5, pady=5)
+        
+        # Security controls
+        security_label = ttk.Label(button_frame, 
+                                  text="Security:",
+                                  background=COLORS["bg_medium"],
+                                  foreground=COLORS["text"])
+        security_label.grid(row=3, column=0, sticky="w", padx=(0, 10), pady=5)
+        
+        security_arm_btn = ModernButton(button_frame, text="ARM", 
+                                       command=lambda: self.control_security("ARMED"),
+                                       bg_color=COLORS["error"])
+        security_arm_btn.grid(row=3, column=1, padx=5, pady=5)
+        
+        security_home_btn = ModernButton(button_frame, text="HOME", 
+                                        command=lambda: self.control_security("HOME"),
+                                        bg_color=COLORS["success"])
+        security_home_btn.grid(row=3, column=2, padx=5, pady=5)
+
+        security_disarm_btn = ModernButton(button_frame, text="DISARM", 
+                                          command=lambda: self.control_security("DISARMED"),
+                                          bg_color=COLORS["accent_alt"])
+        security_disarm_btn.grid(row=3, column=3, padx=5, pady=5)
+
+    
+  def setup_vehicle_location(self, parent):
+        #Set up the vehicle location visualisation
+        # Vehicle location frame
+        location_frame = ttk.Frame(parent, style="Card.TFrame")
+        location_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Header
+        ttk.Label(location_frame, 
+                 text="Vehicle Location",
+                 font=self.fonts["subheading"],
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Canvas for vehicle visualisation
+        self.location_canvas = tk.Canvas(location_frame, 
+                                        bg=COLORS["bg_medium"],
+                                        highlightthickness=0,
+                                        bd=0)
+        self.location_canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+
+   def setup_camera_view(self, parent):
+        #Set up the camera view
+        # Camera frame
+        camera_frame = ttk.Frame(parent, style="Card.TFrame")
+        camera_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Header
+        ttk.Label(camera_frame, 
+                 text="Camera Feed",
+                 font=self.fonts["subheading"],
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Camera canvas
+        self.camera_canvas = tk.Canvas(camera_frame, 
+                                      bg=COLORS["bg_dark"],
+                                      highlightthickness=0,
+                                      bd=0)
+        self.camera_canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+
+    def setup_notifications(self, parent):
+    #Set up the notifications panel
+        # Notifications frame
+        notif_frame = ttk.Frame(parent, style="Card.TFrame")
+        notif_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Header with clear button
+        header_frame = ttk.Frame(notif_frame, style="Card.TFrame")
+        header_frame.pack(fill=tk.X, padx=10, pady=(10, 5))
+        
+        ttk.Label(header_frame, 
+                 text="Notifications",
+                 font=self.fonts["subheading"],
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).pack(side=tk.LEFT)
+        
+        clear_btn = ModernButton(header_frame, text="Clear All", 
+                                command=self.clear_notifications,
+                                bg_color=COLORS["bg_light"],
+                                width=80, height=30)
+        clear_btn.pack(side=tk.RIGHT, padx=5)
+        
+        # Notifications canvas with scrollbar
+        self.notif_canvas = tk.Canvas(notif_frame,
+                                     bg=COLORS["bg_medium"],
+                                     highlightthickness=0,
+                                     bd=0)
+        self.notif_canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Frame to hold notification items
+        self.notif_items_frame = ttk.Frame(self.notif_canvas, style="Card.TFrame")
+        self.notif_canvas.create_window((0, 0), window=self.notif_items_frame, anchor="nw")
+        
+        # Scrollbar
+        scrollbar = ttk.Scrollbar(notif_frame, orient="vertical", command=self.notif_canvas.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.notif_canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Configure scrolling
+        self.notif_items_frame.bind("<Configure>", 
+                                   lambda e: self.notif_canvas.configure(
+                                       scrollregion=self.notif_canvas.bbox("all")
+                                   ))
+    
+    def setup_settings(self):
+        #Set up the settings tab
+        # Create settings sections
+        self.create_mqtt_settings()
+        self.create_notification_settings()
+        self.create_video_settings()
+        self.create_temperature_settings()
+        self.create_system_settings()
+    
+    def create_mqtt_settings(self):
+        #Create MQTT settings section
+        # MQTT settings frame
+        mqtt_frame = ttk.Frame(self.settings_tab, style="Card.TFrame")
+        mqtt_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Header
+        ttk.Label(mqtt_frame, 
+                 text="MQTT Settings",
+                 font=self.fonts["subheading"],
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Settings fields
+        fields_frame = ttk.Frame(mqtt_frame, style="Card.TFrame")
+        fields_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Broker
+        ttk.Label(fields_frame, 
+                 text="Broker:",
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).grid(row=0, column=0, sticky="w", padx=(0, 10), pady=5)
+        
+        self.broker_entry = ttk.Entry(fields_frame, width=30, font=self.fonts["body"])
+        self.broker_entry.grid(row=0, column=1, sticky="w", pady=5)
+        self.broker_entry.insert(0, "localhost")
+        
+        # Port
+        ttk.Label(fields_frame, 
+                 text="Port:",
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=5)
+        
+        self.port_entry = ttk.Entry(fields_frame, width=10, font=self.fonts["body"])
+        self.port_entry.grid(row=1, column=1, sticky="w", pady=5)
+        self.port_entry.insert(0, "1883")
+        
+        # Apply button
+        apply_btn = ModernButton(fields_frame, text="Apply Settings", 
+                                command=self.apply_mqtt_settings,
+                                bg_color=COLORS["accent"],
+                                width=120, height=35)
+        apply_btn.grid(row=2, column=1, sticky="w", pady=10)
+    
+    def create_notification_settings(self):
+        #Create notification settings section
+        # Notification settings frame
+        notif_frame = ttk.Frame(self.settings_tab, style="Card.TFrame")
+        notif_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Header
+        ttk.Label(notif_frame, 
+                 text="Notification Settings",
+                 font=self.fonts["subheading"],
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Settings fields
+        fields_frame = ttk.Frame(notif_frame, style="Card.TFrame")
+        fields_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Notification toggle
+        self.notif_toggle = ControlToggle(fields_frame, "Enable Notifications", 
+                                        value=DEFAULT_SETTINGS["notifications_enabled"],
+                                        command=self.toggle_notifications)
+        self.notif_toggle.pack(anchor="w", pady=5)
+        
+        # Voice control toggle
+        self.voice_toggle = ControlToggle(fields_frame, "Enable Voice Control", 
+                                        value=DEFAULT_SETTINGS["voice_control_enabled"],
+                                        command=self.toggle_voice_control)
+        self.voice_toggle.pack(anchor="w", pady=5)
+
+   
+def create_temperature_settings(self):
+        #Create temperature settings section
+        # Temperature settings frame
+        temp_frame = ttk.Frame(self.settings_tab, style="Card.TFrame")
+        temp_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Header
+        ttk.Label(temp_frame, 
+                 text="Temperature Settings",
+                 font=self.fonts["subheading"],
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Settings fields
+        fields_frame = ttk.Frame(temp_frame, style="Card.TFrame")
+        fields_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Heating ON threshold
+        ttk.Label(fields_frame, 
+                 text="Turn Heating ON below:",
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).grid(row=0, column=0, sticky="w", padx=(0, 10), pady=5)
+        
+        self.heat_on_entry = ttk.Entry(fields_frame, width=10, font=self.fonts["body"])
+        self.heat_on_entry.grid(row=0, column=1, sticky="w", pady=5)
+        self.heat_on_entry.insert(0, str(DEFAULT_SETTINGS["heating_on_threshold"]))
+        
+        ttk.Label(fields_frame, 
+                 text="°C",
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).grid(row=0, column=2, sticky="w", padx=5, pady=5)
+        
+        # Heating OFF threshold
+        ttk.Label(fields_frame, 
+                 text="Turn Heating OFF above:",
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).grid(row=1, column=0, sticky="w", padx=(0, 10), pady=5)
+        
+        self.heat_off_entry = ttk.Entry(fields_frame, width=10, font=self.fonts["body"])
+        self.heat_off_entry.grid(row=1, column=1, sticky="w", pady=5)
+        self.heat_off_entry.insert(0, str(DEFAULT_SETTINGS["heating_off_threshold"]))
+        
+        ttk.Label(fields_frame, 
+                 text="°C",
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).grid(row=1, column=2, sticky="w", padx=5, pady=5)
+
+        # Apply button
+        apply_btn = ModernButton(fields_frame, text="Apply Settings", 
+                                command=self.apply_temperature_settings,
+                                bg_color=COLORS["accent"],
+                                width=120, height=35)
+        apply_btn.grid(row=2, column=1, sticky="w", pady=10)
+    
+    def create_system_settings(self):
+        #Create system control settings
+        # System settings frame
+        system_frame = ttk.Frame(self.settings_tab, style="Card.TFrame")
+        system_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # Header
+        ttk.Label(system_frame, 
+                 text="System Control",
+                 font=self.fonts["subheading"],
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # Settings fields
+        fields_frame = ttk.Frame(system_frame, style="Card.TFrame")
+        fields_frame.pack(fill=tk.X, padx=10, pady=10)
+        
+        # Status indicator
+        self.system_status = ttk.Label(fields_frame,
+                                      text="System running normally",
+                                      background=COLORS["bg_medium"],
+                                      foreground=COLORS["success"],
+                                      font=self.fonts["body"])
+        self.system_status.pack(anchor="w", pady=5)
+        
+        # Button frame
+        button_frame = ttk.Frame(fields_frame, style="Card.TFrame")
+        button_frame.pack(fill=tk.X, pady=5)
+        
+        # Restart button
+        restart_btn = ModernButton(button_frame, text="Restart System", 
+                                  command=self.restart_system,
+                                  bg_color=COLORS["warning"],
+                                  width=150, height=40)
+        restart_btn.pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # Stop button
+        stop_btn = ModernButton(button_frame, text="Stop System", 
+                               command=self.stop_system,
+                               bg_color=COLORS["error"],
+                               width=150, height=40)
+        stop_btn.pack(side=tk.LEFT, padx=5, pady=5)
+    
+    def setup_history(self):
+        #Set up the history tab
+        # History content frame
+        history_frame = ttk.Frame(self.history_tab, style="Card.TFrame")
+        history_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # Header
+        ttk.Label(history_frame, 
+                 text="Event History",
+                 font=self.fonts["subheading"],
+                 background=COLORS["bg_medium"],
+                 foreground=COLORS["text"]).pack(anchor="w", padx=10, pady=(10, 5))
+        
+        # History will display all notifications in scrollable list
+        # We'll reuse the update_notifications method for this
+    
+    def update_ui(self):
+        #Update UI elements with current system data.
+        if not self.running:
+            return
+        
+        # Update status cards
+        self.update_status_cards()
+        
+        # Update visualisations
+        self.update_location_visualisation()
+        self.update_camera_visualisation()
+        self.update_video_simulation()
+        
+        # Schedule next update
+        self.root.after(200, self.update_ui)
+    
+    def update_status_cards(self):
+        #update all status cards with current data
+
+        # Security card
+        security = system_data["security_status"]
+        self.status_cards["security"].update_value(security)
+
+        # Temperature card
+        temp = system_data["temperature"]
+        temp_color = get_color_for_temperature(temp)
+        self.status_cards["temperature"].update_value(f"{temp:.1f} °C")
+        
+        # Heating card
+        heating = system_data["heating_status"]
+        self.status_cards["heating"].update_value(heating)
+        
+        # Light card
+        light = system_data["light_status"]
+        if light == "DIM":
+            light_text = f"DIM ({system_data['light_brightness']}%)"
+        elif light == "ON":
+            light_text = f"ON ({system_data['light_brightness']}%)"
+        else:
+            light_text = "OFF"
+        self.status_cards["light"].update_value(light_text)
+        
+        # Garage door card
+        door = system_data["garage_door_status"]
+        self.status_cards["garage"].update_value(door)
+        
+    
+
+        # Fuel card
+        fuel = system_data["fuel_level"]
+        fuel_text = f"{fuel:.1f}%"
+        self.status_cards["fuel"].update_value(fuel_text)
+
+
+    def update_location_visualisation(self):
+        #Update the vehicle location visualisation.
+        canvas = self.location_canvas
+        canvas.delete("all")
+        
+        # Get canvas dimensions
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        
+        if width < 10 or height < 10:  # Canvas not ready
+            return
+        
+        # Draw road
+        road_y = height * 0.6
+        road_height = height * 0.2
+        
+        # Road background
+        canvas.create_rectangle(
+            0, road_y - road_height/2,
+            width, road_y + road_height/2,
+            fill="#444444", outline=""
+        )
+        
+        # Road markings
+        dash_width = 20
+        gap_width = 30
+        for x in range(0, width, dash_width + gap_width):
+            canvas.create_rectangle(
+                x, road_y - 2,
+                x + dash_width, road_y + 2,
+                fill="#FFFFFF", outline=""
+            )
+        
+        # Draw house
+        house_width = width * 0.15
+        house_height = house_width * 0.8
+        house_x = width * 0.9
+        house_y = road_y - road_height/2 - house_height/2
+        
+        # House body
+        create_rounded_rectangle(
+            canvas, 
+            house_x - house_width/2, house_y,
+            house_x + house_width/2, house_y + house_height,
+            radius=10, fill=COLORS["accent_alt"], outline=""
+        )
+        
+        # Roof
+        canvas.create_polygon(
+            house_x - house_width/2 - 10, house_y,
+            house_x, house_y - house_height/2,
+            house_x + house_width/2 + 10, house_y,
+            fill=COLORS["error"], outline=""
+        )
+        
+        # Garage
+        garage_width = house_width * 0.7
+        garage_height = house_height * 0.6
+        garage_x = house_x - house_width/2 - garage_width/2
+        garage_y = house_y + house_height - garage_height
+        
+        # Garage body
+        create_rounded_rectangle(
+            canvas,
+            garage_x - garage_width/2, garage_y,
+            garage_x + garage_width/2, garage_y + garage_height,
+            radius=5, fill=COLORS["bg_medium"], outline=""
+        )
+        
+        # Garage door
+        door_width = garage_width * 0.8
+        door_height = garage_height * 0.8
+        door_x = garage_x
+        door_y = garage_y + (garage_height - door_height) / 2
+        
+        # Door color based on status
+        if system_data["garage_door_status"] == "OPEN":
+            door_color = COLORS["bg_dark"]
+            # Draw open door
+            canvas.create_rectangle(
+                door_x - door_width/2, door_y,
+                door_x + door_width/2, door_y + door_height,
+                fill=door_color, outline=COLORS["accent"]
+            )
+        elif system_data["garage_door_status"] == "OPENING":
+            door_color = COLORS["bg_dark"]
+            # Draw partially open door
+            canvas.create_rectangle(
+                door_x - door_width/2, door_y + door_height * 0.5,
+                door_x + door_width/2, door_y + door_height,
+                fill=door_color, outline=COLORS["accent"]
+            )
+        elif system_data["garage_door_status"] == "CLOSING":
+            door_color = COLORS["accent"]
+            # Draw partially open door
+            canvas.create_rectangle(
+                door_x - door_width/2, door_y + door_height * 0.7,
+                door_x + door_width/2, door_y + door_height,
+                fill=door_color, outline=COLORS["accent"]
+            )
+        else:  # CLOSED
+            door_color = COLORS["accent"]
+            # Draw closed door
+            canvas.create_rectangle(
+                door_x - door_width/2, door_y,
+                door_x + door_width/2, door_y + door_height,
+                fill=door_color, outline=COLORS["accent"]
+            )
+        
+        # Draw driveway
+        driveway_width = width * 0.7
+        canvas.create_polygon(
+            garage_x - door_width/2, garage_y + door_height,
+            garage_x + door_width/2, garage_y + door_height,
+            width * 0.1, road_y - road_height/2,
+            0, road_y - road_height/2,
+            fill=COLORS["bg_light"], outline=""
+        )
+        
+        # Draw distance markers
+        for i in range(0, 6):
+            distance = i * 100  # 0, 100, 200, 300, 400, 500
+            position = 1 - (distance / 500)  # Convert to position (0-1)
+            
+            x_pos = garage_x - door_width/2 - (garage_x - door_width/2 - width * 0.05) * (1 - position)
+            y_pos = garage_y + door_height - (garage_y + door_height - road_y + road_height/2) * (1 - position)
+            
+            # Only draw markers at the road level
+            if distance > 0:
+                canvas.create_line(
+                    x_pos, road_y - road_height/2 - 5,
+                    x_pos, road_y - road_height/2 + 5,
+                    fill=COLORS["text_muted"], width=1
+                )
+                
+                canvas.create_text(
+                    x_pos, road_y - road_height/2 + 15,
+                    text=f"{distance}m",
+                    fill=COLORS["text_muted"],
+                    font=self.fonts["small"]
+                )
+        
+        # Draw vehicle if in range
+        if system_data["vehicle_proximity"] > 0:
+            # Calculate vehicle position
+            proximity = system_data["vehicle_proximity"]
+            position = get_car_position(proximity)
+            
+            # Vehicle x position based on distance
+            car_x = garage_x - door_width/2 - (garage_x - door_width/2 - width * 0.05) * (1 - position)
+            car_y = road_y
+            
+            # Vehicle size based on distance (further = smaller)
+            max_car_width = width * 0.1
+            car_width = max_car_width * (0.5 + position * 0.5)  # Scale by position
+            car_height = car_width * 0.5
+            
+            # Draw car body
+            if system_data["is_owner_plate"]:
+                car_color = COLORS["success"]
+            else:
+                car_color = COLORS["error"]
+            
+            # Car bottom
+            create_rounded_rectangle(
+                canvas,
+                car_x - car_width/2, car_y - car_height * 0.6,
+                car_x + car_width/2, car_y,
+                radius=car_height * 0.2, fill=car_color, outline=""
+            )
+            
+            # Car top
+            create_rounded_rectangle(
+                canvas,
+                car_x - car_width * 0.4, car_y - car_height,
+                car_x + car_width * 0.4, car_y - car_height * 0.6,
+                radius=car_height * 0.1, fill=car_color, outline=""
+            )
+            
+            # Wheels
+            wheel_size = car_height * 0.3
+            canvas.create_oval(
+                car_x - car_width * 0.4 - wheel_size/2, car_y - wheel_size/2,
+                car_x - car_width * 0.4 + wheel_size/2, car_y + wheel_size/2,
+                fill="#000000"
+            )
+            canvas.create_oval(
+                car_x + car_width * 0.4 - wheel_size/2, car_y - wheel_size/2,
+                car_x + car_width * 0.4 + wheel_size/2, car_y + wheel_size/2,
+                fill="#000000"
+            )
+
+
+        # Draw license plate
+            if position > 0.3:  # Only if car is close enough
+                plate_width = car_width * 0.5
+                plate_height = plate_width * 0.2
+                
+                canvas.create_rectangle(
+                    car_x - plate_width/2, car_y - car_height * 0.3 - plate_height/2,
+                    car_x + plate_width/2, car_y - car_height * 0.3 + plate_height/2,
+                    fill="white", outline="black"
+                )
+                
+                # Calculate font size based on distance
+                font_size = int(9 * position + 7)  # Scale from 9-16 based on position
+                
+                canvas.create_text(
+                    car_x, car_y - car_height * 0.3,
+                    text=system_data["detected_plate"],
+                    fill="black",
+                    font=("Courier", font_size, "bold")
+                )
+            
+            # Add distance text
+            canvas.create_text(
+                car_x, car_y + 15,
+                text=f"{proximity}m",
+                fill=COLORS["text"],
+                font=self.fonts["small"]
+            )
+            
+            # Add owner indicator if owner
+            if system_data["is_owner_plate"]:
+                canvas.create_text(
+                    car_x, car_y + 30,
+                    text="OWNER",
+                    fill=COLORS["success"],
+                    font=self.fonts["button"]
+                )
+    def update_camera_visualisation(self):
+        #Update the camera feed visualisation
+        canvas = self.camera_canvas
+        canvas.delete("all")
+        
+        # Get canvas dimensions
+        width = canvas.winfo_width()
+        height = canvas.winfo_height()
+        
+        if width < 10 or height < 10:  # Canvas not ready
+            return
+        
+        # Draw camera frame
+        create_rounded_rectangle(
+            canvas, 0, 0, width, height,
+            radius=5, fill=COLORS["bg_dark"], outline=""
+        )
+        
+        # Add timestamp
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        canvas.create_text(
+            width - 10, height - 10,
+            text=timestamp,
+            fill=COLORS["text_muted"],
+            font=self.fonts["small"],
+            anchor="se"
+        )
+        
+        # Add camera name
+        canvas.create_text(
+            10, 10,
+            text="DRIVEWAY CAM",
+            fill=COLORS["text_muted"],
+            font=self.fonts["small"],
+            anchor="nw"
+        )
+        
+        # If no vehicle or too far, show empty view
+        if not system_data["detected_plate"] or system_data["vehicle_proximity"] > 200:
+            canvas.create_text(
+                width/2, height/2,
+                text="No vehicle in camera view",
+                fill=COLORS["text_muted"],
+                font=self.fonts["body"]
+            )
+            return
+        
+        # Calculate car size based on proximity
+        proximity = system_data["vehicle_proximity"]
+        position = get_car_position(proximity)
+        
+        car_width = width * 0.6 * position  # Scale by position
+        car_height = car_width * 0.4
+        
+        # Position car
+        car_x = width / 2
+        car_y = height * 0.6
+        
+        # Car color based on owner status
+        if system_data["is_owner_plate"]:
+            car_color = COLORS["success"]
+        else:
+            car_color = COLORS["error"]
+        
+        # Draw car body - simple representation
+        # Car bottom
+        create_rounded_rectangle(
+            canvas,
+            car_x - car_width/2, car_y - car_height,
+            car_x + car_width/2, car_y,
+            radius=car_height * 0.1, fill=car_color, outline=""
+        )
+        
+        # Car top
+        create_rounded_rectangle(
+            canvas,
+            car_x - car_width * 0.4, car_y - car_height * 1.5,
+            car_x + car_width * 0.4, car_y - car_height,
+            radius=car_height * 0.1, fill=car_color, outline=""
+        )
+        
+        # Windshield
+        canvas.create_polygon(
+            car_x - car_width * 0.35, car_y - car_height,
+            car_x - car_width * 0.25, car_y - car_height * 1.4,
+            car_x + car_width * 0.25, car_y - car_height * 1.4,
+            car_x + car_width * 0.35, car_y - car_height,
+            fill=COLORS["accent"], outline=""
+        )
+        
+        # License plate
+        plate_width = car_width * 0.3
+        plate_height = plate_width * 0.2
+        plate_x = car_x
+        plate_y = car_y - car_height * 0.5
+        
+        # Draw license plate background
+        create_rounded_rectangle(
+            canvas,
+            plate_x - plate_width/2, plate_y - plate_height/2,
+            plate_x + plate_width/2, plate_y + plate_height/2,
+            radius=3, fill="white", outline=""
+        )
+        
+        # Draw license plate text
+        canvas.create_text(
+            plate_x, plate_y,
+            text=system_data["detected_plate"],
+            fill="black",
+            font=("Courier", 12, "bold")
+        )
+        
+        # Add license plate detection box
+        canvas.create_rectangle(
+            plate_x - plate_width/2 - 3, plate_y - plate_height/2 - 3,
+            plate_x + plate_width/2 + 3, plate_y + plate_height/2 + 3,
+            outline=COLORS["accent"], width=2, dash=(5, 3)
+        )
+        
+        # Add detection text
+        canvas.create_text(
+            plate_x, plate_y + plate_height/2 + 15,
+            text="LICENSE PLATE DETECTED",
+            fill=COLORS["accent"],
+            font=self.fonts["small"]
+        )
+        
+        # Add owner recognition if applicable
+        if system_data["is_owner_plate"]:
+            # Add recognition box around whole car
+            canvas.create_rectangle(
+                car_x - car_width/2 - 10, car_y - car_height * 1.5 - 10,
+                car_x + car_width/2 + 10, car_y + 10,
+                outline=COLORS["success"], width=2, dash=(8, 4)
+            )
+            
+            # Add recognition text
+            canvas.create_text(
+                width/2, 40,
+                text="✓ OWNER RECOGNIZED",
+                fill=COLORS["success"],
+                font=self.fonts["subheading"]
+            )
+    
+    def clear_notifications(self):
+        #Clear all notifications
+        system_data["notifications"] = []
+        self.update_notifications()
+        add_notification("Notifications cleared", "info")
+
+    #veronika
+
+
+    def control_lights(self, status):
+        #Control the lighting system
+        system_data["light_status"] = status
+        
+        # Set brightness based on status
+        if status == "ON":
+            system_data["light_brightness"] = 100
+        elif status == "DIM":
+            system_data["light_brightness"] = 40
+        else:  # OFF
+            system_data["light_brightness"] = 0
+            
+        add_notification(f"Lights manually set to {status}", "info")
+
+
+    def control_garage(self, status):
+        #Control the garage door
+        # Set to transitional state first
+        system_data["garage_door_status"] = status
+        
+        # After delay, set to final state
+        final_status = "OPEN" if status == "OPENING" else "CLOSED"
+        add_notification(f"Garage door {status.lower()}", "info")
+        
+        # Use threading.Timer to simulate door movement
+        threading.Timer(3.0, lambda: set_garage_status(final_status)).start()
+    
+    def control_security(self, status):
+        #Control the security system
+        system_data["security_status"] = status
+        add_notification(f"Security system set to {status}", "info")
+    
+    def toggle_notifications(self, value):
+        #Toggle notifications on/off
+        DEFAULT_SETTINGS["notifications_enabled"] = value
+        add_notification(f"Notifications {'enabled' if value else 'disabled'}", "info")
+    
+    def toggle_voice_control(self, value):
+        #Toggle voice control on/off
+        DEFAULT_SETTINGS["voice_control_enabled"] = value
+        add_notification(f"Voice control {'enabled' if value else 'disabled'}", "info")
+    
+    def apply_mqtt_settings(self):
+        #Apply MQTT settings
+        try:
+            broker = self.broker_entry.get().strip()
+            port = int(self.port_entry.get().strip())
+            
+            # Validate
+            if not broker:
+                add_notification("Error: Broker address cannot be empty", "error")
+                return
+                
+            if port < 1 or port > 65535:
+                add_notification("Error: Port must be between 1 and 65535", "error")
+                return
+            
+            add_notification(f"MQTT settings updated: {broker}:{port}", "success")
+            self.system_status.config(text="Settings changed. Restart required.")
+        except ValueError:
+            add_notification("Error: Port must be a number", "error")
+    
+    def apply_temperature_settings(self):
+        #Apply temperature threshold settings
+        try:
+            heat_on = float(self.heat_on_entry.get().strip())
+            heat_off = float(self.heat_off_entry.get().strip())
+            
+            # Validate
+            if heat_on >= heat_off:
+                add_notification("Error: 'Heat ON' threshold must be lower than 'Heat OFF'", "error")
+                return
+            
+            DEFAULT_SETTINGS["heating_on_threshold"] = heat_on
+            DEFAULT_SETTINGS["heating_off_threshold"] = heat_off
+            
+            add_notification(f"Temperature thresholds updated: ON below {heat_on}°C, OFF above {heat_off}°C", "success")
+        except ValueError:
+            add_notification("Error: Temperature thresholds must be numbers", "error")
+    
+    def restart_system(self):
+        #Restart the system
+        self.system_status.config(text="Restarting system...", foreground=COLORS["warning"])
+        add_notification("System restarting...", "warning")
+        
+        # Simulate restart (in a real system, this would restart components)
+        def finish_restart():
+            self.system_status.config(text="System running normally", foreground=COLORS["success"])
+            add_notification("System restarted successfully", "success")
+        
+        # Delayed completion
+        self.root.after(2000, finish_restart)
+    
+    def stop_system(self):
+        #Stop the system
+        self.running = False
+        self.system_status.config(text="System shutting down...", foreground=COLORS["error"])
+        add_notification("System shutting down...", "error")
+        
+        # In a real system, this would properly close components
+        def finish_shutdown():
+            self.system_status.config(text="System stopped", foreground=COLORS["error"])
+            add_notification("System stopped", "error")
+        
+        # Delayed completion
+        self.root.after(2000, finish_shutdown)
+    
+    def on_closing(self):
+        #Handle window closing
+        self.running = False
+        self.root.destroy()
+
+# ===== Main Function =====
+def main():
+    #Main application entry point
+    root = tk.Tk()
+    app = SmartDrivewayApp(root)
+    
+    # Set up closing handler
+    root.protocol("WM_DELETE_WINDOW", app.on_closing)
+    
+    # Start the main loop
+    root.mainloop()
+
+if __name__ == "__main__":
+    main()
+    
+    
